@@ -35,6 +35,7 @@ class MtEnv(gym.Env):
             initial_balance_kwargs: Optional[Tuple[float, float]] = None,
             time_split: bool = False,
             min_time_split_length: int = 10,
+            max_time_limit: int = 500,
             seed: int = 42,
     ) -> None:
         # validations
@@ -108,6 +109,7 @@ class MtEnv(gym.Env):
         self.initial_balance_kwargs = initial_balance_kwargs
         self.time_split = time_split
         self.min_time_split_length = min_time_split_length
+        self.max_time_split_length = max_time_limit
 
     def reset(self, seed=None, options=None) -> Dict[str, np.ndarray]:
         super().reset(seed=seed, options=options)
@@ -126,8 +128,9 @@ class MtEnv(gym.Env):
             min_time_split_length = self.min_time_split_length
             self._start_tick = self.np_rng.integers(self._initial_start_tick,
                                                     self._max_end_tick - min_time_split_length)
+            high = min(self._max_end_tick, self._start_tick + min_time_split_length + self.max_time_split_length)
             self._end_tick = self.np_rng.integers(low=self._start_tick + min_time_split_length,
-                                                  high=self._max_end_tick)
+                                                  high=high)
             self._current_tick = self._start_tick
 
         self.simulator.current_time = self.time_points[self._current_tick]
