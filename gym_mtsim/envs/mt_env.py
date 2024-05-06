@@ -164,7 +164,6 @@ class MtEnv(gym.Env):
             if len(symbol_orders) > 0:
                 prob = close_orders_probability[:len(symbol_orders)]
                 closes = np.asarray([self.np_rng.choice([False, True], p=[1-p, p])for p in prob])
-                print(len(closes))
                 orders_to_close_index = np.where(closes)[0]
                 orders_to_close = np.array(symbol_orders)[orders_to_close_index]
 
