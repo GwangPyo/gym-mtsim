@@ -18,23 +18,24 @@ from ..simulator import MtSimulator, OrderType
 
 
 class MtEnv(gym.Env):
-
     metadata = {'render_modes': ['human', 'simple_figure', 'advanced_figure']}
 
     def __init__(
-        self,
-        original_simulator: MtSimulator,
-        trading_symbols: List[str],
-        window_size: int,
-        time_points: Optional[List[datetime]] = None,
-        fee: Union[float, Callable[[str], float]] = 0.0005,
-        symbol_max_orders: int = 1,
-        multiprocessing_processes: Optional[int] = None,
-        render_mode: Optional[str] = None,
-        preprocess: Optional[Callable] = np.arcsinh,
-        randomize_initial_balance: bool = False,
-        initial_balance_kwargs: Optional[Tuple[float, float]] = None,
-        seed: int = 42,
+            self,
+            original_simulator: MtSimulator,
+            trading_symbols: List[str],
+            window_size: int,
+            time_points: Optional[List[datetime]] = None,
+            fee: Union[float, Callable[[str], float]] = 0.0005,
+            symbol_max_orders: int = 1,
+            multiprocessing_processes: Optional[int] = None,
+            render_mode: Optional[str] = None,
+            preprocess: Optional[Callable] = np.arcsinh,
+            randomize_initial_balance: bool = False,
+            initial_balance_kwargs: Optional[Tuple[float, float]] = None,
+            time_split: bool = False,
+            min_time_split_length: int = 10,
+            seed: int = 42,
     ) -> None:
         # validations
         assert len(original_simulator.symbols_data) > 0, "no data available"
@@ -49,7 +50,7 @@ class MtEnv(gym.Env):
             assert symbol in original_simulator.symbols_info, f"symbol '{symbol}' not found"
             currency_profit = original_simulator.symbols_info[symbol].currency_profit
             assert original_simulator._get_unit_symbol_info(currency_profit) is not None, \
-                   f"unit symbol for '{currency_profit}' not found"
+                f"unit symbol for '{currency_profit}' not found"
 
         if time_points is None:
             time_points = original_simulator.symbols_data[trading_symbols[0]].index.to_pydatetime().tolist()
@@ -91,6 +92,10 @@ class MtEnv(gym.Env):
         # episode
         self._start_tick = self.window_size - 1
         self._end_tick = len(self.time_points) - 1
+
+        self._initial_start_tick = self.window_size - 1
+        self._max_end_tick = len(self.time_points) - 1
+
         self.preprocess = preprocess
         self._truncated: bool = NotImplemented
         self._current_tick: int = NotImplemented
@@ -101,6 +106,8 @@ class MtEnv(gym.Env):
         if initial_balance_kwargs is None:
             initial_balance_kwargs = make_log_normal_parameter(10000, 1000)
         self.initial_balance_kwargs = initial_balance_kwargs
+        self.time_split = time_split
+        self.min_time_split_length = min_time_split_length
 
     def reset(self, seed=None, options=None) -> Dict[str, np.ndarray]:
         super().reset(seed=seed, options=options)
@@ -112,9 +119,16 @@ class MtEnv(gym.Env):
         self.simulator = copy.deepcopy(self.original_simulator)
         self.initial_balance = copy.deepcopy(self.simulator.balance)
         if self.randomize_initial_balance:
-            self.simulator.equity =self.np_rng.lognormal(*self.initial_balance_kwargs)
+            self.simulator.equity = self.np_rng.lognormal(*self.initial_balance_kwargs)
             self.simulator.balance = copy.deepcopy(self.simulator.equity)
             self.initial_balance = copy.deepcopy(self.simulator.balance)
+        if self.time_split:
+            min_time_split_length = self.min_time_split_length
+            self._start_tick = self.np_rng.integers(self._initial_start_tick,
+                                                    self._max_end_tick - min_time_split_length)
+            self._end_tick = self.np_rng.integers(low=self._start_tick + min_time_split_length,
+                                                  high=self._max_end_tick)
+            self._current_tick = self._start_tick
 
         self.simulator.current_time = self.time_points[self._current_tick]
         self.history = [self._create_info()]
@@ -134,7 +148,7 @@ class MtEnv(gym.Env):
         self.simulator.tick(dt)
 
         step_reward = self._calculate_reward()
-        terminal = (self.simulator.equity == 0) # bankrupt is done
+        terminal = (self.simulator.equity == 0)  # bankrupt is done
         info = self._create_info(
             orders=orders_info, closed_orders=closed_orders_info, step_reward=step_reward
         )
@@ -150,20 +164,20 @@ class MtEnv(gym.Env):
         k = self.symbol_max_orders + 2
 
         for i, symbol in enumerate(self.trading_symbols):
-            symbol_action = action[k*i:k*(i+1)]
+            symbol_action = action[k * i:k * (i + 1)]
             close_orders_logit = symbol_action[:-2]
             hold_logit = symbol_action[-2]
             volume = symbol_action[-1] * 100
 
             close_orders_probability = (close_orders_logit + 1) / 2.
             hold_probability = (hold_logit + 1) / 2.
-            hold = self.np_rng.choice([False, True], p=[1-hold_probability, hold_probability])
+            hold = self.np_rng.choice([False, True], p=[1 - hold_probability, hold_probability])
 
             modified_volume = self._get_modified_volume(symbol, volume)
             symbol_orders = self.simulator.symbol_orders(symbol)
             if len(symbol_orders) > 0:
                 prob = close_orders_probability[:len(symbol_orders)]
-                closes = np.asarray([self.np_rng.choice([False, True], p=[1-p, p])for p in prob])
+                closes = np.asarray([self.np_rng.choice([False, True], p=[1 - p, p]) for p in prob])
                 orders_to_close_index = np.where(closes)[0]
                 orders_to_close = np.array(symbol_orders)[orders_to_close_index]
 
@@ -208,7 +222,7 @@ class MtEnv(gym.Env):
 
         return orders_info, closed_orders_info
 
-    def _get_prices(self, keys: List[str]=['Close', 'Open']) -> Dict[str, np.ndarray]:
+    def _get_prices(self, keys: List[str] = ['Close', 'Open']) -> Dict[str, np.ndarray]:
         prices = {}
 
         for symbol in self.trading_symbols:
@@ -230,7 +244,7 @@ class MtEnv(gym.Env):
         return signal_features
 
     def _get_observation(self) -> Dict[str, np.ndarray]:
-        features = self.signal_features[(self._current_tick-self.window_size+1):(self._current_tick+1)]
+        features = self.signal_features[(self._current_tick - self.window_size + 1):(self._current_tick + 1)]
 
         orders = np.zeros(self.observation_space['orders'].shape)
         for i, symbol in enumerate(self.trading_symbols):
@@ -272,7 +286,7 @@ class MtEnv(gym.Env):
         v = round(v / si.volume_step) * si.volume_step
         return v
 
-    def render(self, mode: str='human', **kwargs: Any) -> Any:
+    def render(self, mode: str = 'human', **kwargs: Any) -> Any:
         if mode == 'simple_figure':
             return self._render_simple_figure(**kwargs)
         if mode == 'advanced_figure':
@@ -280,7 +294,7 @@ class MtEnv(gym.Env):
         return self.simulator.get_state(**kwargs)
 
     def _render_simple_figure(
-        self, figsize: Tuple[float, float]=(14, 6), return_figure: bool=False
+            self, figsize: Tuple[float, float] = (14, 6), return_figure: bool = False
     ) -> Any:
         fig, ax = plt.subplots(figsize=figsize, facecolor='white')
 
@@ -347,10 +361,10 @@ class MtEnv(gym.Env):
         plt.show()
 
     def _render_advanced_figure(
-        self,
-        figsize: Tuple[float, float] = (1400, 600),
-        time_format: str = "%Y-%m-%d %H:%m",
-        return_figure: bool = False,
+            self,
+            figsize: Tuple[float, float] = (1400, 600),
+            time_format: str = "%Y-%m-%d %H:%m",
+            return_figure: bool = False,
     ) -> Any:
         fig = go.Figure()
 
@@ -382,13 +396,13 @@ class MtEnv(gym.Env):
                     opacity=1.0,
                     hovertext=extra_info,
                     name=symbol,
-                    yaxis=f'y{j+1}',
-                    legendgroup=f'g{j+1}',
+                    yaxis=f'y{j + 1}',
+                    legendgroup=f'g{j + 1}',
                 ),
             )
 
             fig.update_layout(**{
-                f'yaxis{j+1}': dict(
+                f'yaxis{j + 1}': dict(
                     tickfont=dict(color=get_color_string(symbol_color * [1, 1, 1, 0.8])),
                     overlaying='y' if j > 0 else None,
                     # position=0.035*j
@@ -466,9 +480,9 @@ class MtEnv(gym.Env):
                     marker_color=trade_colors,
                     marker_size=trade_sizes,
                     name=symbol,
-                    yaxis=f'y{j+1}',
+                    yaxis=f'y{j + 1}',
                     showlegend=False,
-                    legendgroup=f'g{j+1}',
+                    legendgroup=f'g{j + 1}',
                 ),
             )
 
@@ -483,9 +497,9 @@ class MtEnv(gym.Env):
                     marker_size=7,
                     marker_line_width=1.5,
                     name=symbol,
-                    yaxis=f'y{j+1}',
+                    yaxis=f'y{j + 1}',
                     showlegend=False,
-                    legendgroup=f'g{j+1}',
+                    legendgroup=f'g{j + 1}',
                 ),
             )
 

@@ -15,13 +15,13 @@ from .exceptions import SymbolNotFound, OrderNotFound
 class MtSimulator:
 
     def __init__(
-        self,
-        unit: str = 'USD',
-        balance: float = 10000.,
-        leverage: float = 100.,
-        stop_out_level: float = 0.2,
-        hedge: bool = True,
-        symbols_filename: Optional[str] = None,
+            self,
+            unit: str = 'USD',
+            balance: float = 10000.,
+            leverage: float = 100.,
+            stop_out_level: float = 0.2,
+            hedge: bool = True,
+            symbols_filename: Optional[str] = None,
     ) -> None:
         self.unit = unit
         self.balance = balance
@@ -41,6 +41,9 @@ class MtSimulator:
         if symbols_filename:
             if not self.load_symbols(symbols_filename):
                 raise FileNotFoundError(f"file '{symbols_filename}' not found")
+        v = list(self.symbols_data.values())[0]
+        self.initial_time = v.index[0]
+        self.end_time = v.index[-1]
 
     @property
     def free_margin(self) -> float:
@@ -54,7 +57,7 @@ class MtSimulator:
         return self.equity / margin
 
     def download_data(
-        self, symbols: List[str], time_range: Tuple[datetime, datetime], timeframe: Timeframe
+            self, symbols: List[str], time_range: Tuple[datetime, datetime], timeframe: Timeframe
     ) -> None:
         from_dt, to_dt = time_range
         for symbol in symbols:
@@ -73,7 +76,7 @@ class MtSimulator:
             self.symbols_info, self.symbols_data = pickle.load(file)
         return True
 
-    def tick(self, delta_time: timedelta=timedelta()) -> None:
+    def tick(self, delta_time: timedelta = timedelta()) -> None:
         self._check_current_time()
 
         self.current_time += delta_time
@@ -115,8 +118,8 @@ class MtSimulator:
         return symbol_orders
 
     def create_order(
-        self, order_type: OrderType, symbol: str, volume: float, fee: float=0.0005,
-        raise_exception: bool = True
+            self, order_type: OrderType, symbol: str, volume: float, fee: float = 0.0005,
+            raise_exception: bool = True
     ) -> Optional[Order]:
         self._check_current_time()
         self._check_volume(symbol, volume)
@@ -128,8 +131,8 @@ class MtSimulator:
         return self._create_unhedged_order(order_type, symbol, volume, fee, raise_exception)
 
     def _create_hedged_order(
-        self, order_type: OrderType, symbol: str, volume: float, fee: float,
-        raise_exception: bool
+            self, order_type: OrderType, symbol: str, volume: float, fee: float,
+            raise_exception: bool
     ) -> Optional[Order]:
         order_id = len(self.closed_orders) + len(self.orders) + 1
         entry_time = self.current_time
@@ -158,8 +161,8 @@ class MtSimulator:
         return order
 
     def _create_unhedged_order(
-        self, order_type: OrderType, symbol: str, volume: float, fee: float,
-        raise_exception: bool
+            self, order_type: OrderType, symbol: str, volume: float, fee: float,
+            raise_exception: bool
     ) -> Optional[Order]:
         if symbol not in map(lambda order: order.symbol, self.orders):
             return self._create_hedged_order(order_type, symbol, volume, fee, raise_exception)
@@ -186,11 +189,11 @@ class MtSimulator:
             return old_order
 
         if volume >= old_order.volume:
-             self.close_order(old_order)
-             if volume > old_order.volume:
-                 return self._create_hedged_order(order_type, symbol, volume - old_order.volume, fee,
-                                                  raise_exception=raise_exception)
-             return old_order
+            self.close_order(old_order)
+            if volume > old_order.volume:
+                return self._create_hedged_order(order_type, symbol, volume - old_order.volume, fee,
+                                                 raise_exception=raise_exception)
+            return old_order
 
         partial_profit = (volume / old_order.volume) * old_order.profit
         partial_margin = (volume / old_order.volume) * old_order.margin
