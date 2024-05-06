@@ -157,12 +157,13 @@ class MtEnv(gym.Env):
 
             close_orders_probability = (close_orders_logit + 1) / 2.
             hold_probability = (hold_logit + 1) / 2.
-            hold = bool(self.np_rng.binomial(1, p=hold_probability))
+            hold = self.np_rng.choice([False, True], p=[1-hold_probability, hold_probability])
 
             modified_volume = self._get_modified_volume(symbol, volume)
             symbol_orders = self.simulator.symbol_orders(symbol)
-            closes = self.np_rng.binomial(1, p=close_orders_probability[:len(symbol_orders)],
-                                          size=close_orders_probability[:len(symbol_orders)].shape)
+            prob = close_orders_probability[:len(symbol_orders)]
+
+            closes = self.np_rng.choice([False, True], p=[1 - prob, prob], size=prob.shape)
             orders_to_close_index = np.where(closes == 1)[0]
             orders_to_close = np.array(symbol_orders)[orders_to_close_index]
 
