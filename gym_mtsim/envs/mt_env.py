@@ -32,7 +32,7 @@ class MtEnv(gym.Env):
         multiprocessing_processes: Optional[int] = None,
         render_mode: Optional[str] = None,
         preprocess: Optional[Callable] = np.arcsinh,
-        randomize_initial_balance: bool = True,
+        randomize_initial_balance: bool = False,
         initial_balance_kwargs: Optional[Tuple[float, float]] = None,
         seed: int = 42,
     ) -> None:
