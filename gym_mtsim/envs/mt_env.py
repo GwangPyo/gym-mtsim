@@ -6,7 +6,7 @@ from pathos.multiprocessing import ProcessingPool as Pool
 
 import numpy as np
 from scipy.special import expit
-
+from .misc import make_log_normal_parameter
 import matplotlib.pyplot as plt
 import matplotlib.cm as plt_cm
 import matplotlib.colors as plt_colors
@@ -14,7 +14,6 @@ import plotly.graph_objects as go
 
 import gymnasium as gym
 from gymnasium import spaces
-
 from ..simulator import MtSimulator, OrderType
 
 
@@ -28,18 +27,20 @@ class MtEnv(gym.Env):
         trading_symbols: List[str],
         window_size: int,
         time_points: Optional[List[datetime]] = None,
-        hold_threshold: float = 0.5,
-        close_threshold: float = 0.5,
         fee: Union[float, Callable[[str], float]] = 0.0005,
         symbol_max_orders: int = 1,
         multiprocessing_processes: Optional[int] = None,
         render_mode: Optional[str] = None,
+        preprocess: Optional[Callable] = np.arcsinh,
+        randomize_initial_balance: bool = True,
+        initial_balance_kwargs: Optional[Tuple[float, float]] = None,
+        seed: int = 42,
     ) -> None:
         # validations
         assert len(original_simulator.symbols_data) > 0, "no data available"
         assert len(original_simulator.symbols_info) > 0, "no data available"
         assert len(trading_symbols) > 0, "no trading symbols provided"
-        assert 0. <= hold_threshold <= 1., "'hold_threshold' must be in range [0., 1.]"
+        self.np_rng = np.random.default_rng(seed)
 
         if not original_simulator.hedge:
             symbol_max_orders = 1
@@ -61,8 +62,6 @@ class MtEnv(gym.Env):
         self.trading_symbols = trading_symbols
         self.window_size = window_size
         self.time_points = time_points
-        self.hold_threshold = hold_threshold
-        self.close_threshold = close_threshold
         self.fee = fee
         self.symbol_max_orders = symbol_max_orders
         self.multiprocessing_pool = Pool(multiprocessing_processes) if multiprocessing_processes else None
@@ -73,7 +72,7 @@ class MtEnv(gym.Env):
 
         # spaces
         self.action_space = spaces.Box(
-            low=-1e2, high=1e2, dtype=np.float64,
+            low=-1., high=1., dtype=np.float64,
             shape=(len(self.trading_symbols) * (self.symbol_max_orders + 2),)
         )  # symbol -> [close_order_i(logit), hold(logit), volume]
 
@@ -92,20 +91,33 @@ class MtEnv(gym.Env):
         # episode
         self._start_tick = self.window_size - 1
         self._end_tick = len(self.time_points) - 1
+        self.preprocess = preprocess
         self._truncated: bool = NotImplemented
         self._current_tick: int = NotImplemented
         self.simulator: MtSimulator = NotImplemented
         self.history: List[Dict[str, Any]] = NotImplemented
+        self.initial_balance: float = NotImplemented
+        self.randomize_initial_balance: bool = randomize_initial_balance
+        if initial_balance_kwargs is None:
+            initial_balance_kwargs = make_log_normal_parameter(10000, 1000)
+        self.initial_balance_kwargs = initial_balance_kwargs
 
     def reset(self, seed=None, options=None) -> Dict[str, np.ndarray]:
         super().reset(seed=seed, options=options)
+        if seed is not None:
+            self.np_rng = np.random.default_rng(seed=seed)
 
         self._truncated = False
         self._current_tick = self._start_tick
         self.simulator = copy.deepcopy(self.original_simulator)
+        self.initial_balance = copy.deepcopy(self.simulator.balance)
+        if self.randomize_initial_balance:
+            self.simulator.equity =self.np_rng.lognormal(*self.initial_balance_kwargs)
+            self.simulator.balance = copy.deepcopy(self.simulator.equity)
+            self.initial_balance = copy.deepcopy(self.simulator.balance)
+
         self.simulator.current_time = self.time_points[self._current_tick]
         self.history = [self._create_info()]
-
         observation = self._get_observation()
         info = self._create_info()
 
@@ -122,14 +134,14 @@ class MtEnv(gym.Env):
         self.simulator.tick(dt)
 
         step_reward = self._calculate_reward()
-
+        terminal = (self.simulator.equity == 0) # bankrupt is done
         info = self._create_info(
             orders=orders_info, closed_orders=closed_orders_info, step_reward=step_reward
         )
         observation = self._get_observation()
         self.history.append(info)
 
-        return observation, step_reward, False, self._truncated, info
+        return observation, step_reward, terminal, self._truncated, info
 
     def _apply_action(self, action: np.ndarray) -> Tuple[Dict, Dict]:
         orders_info = {}
@@ -141,17 +153,17 @@ class MtEnv(gym.Env):
             symbol_action = action[k*i:k*(i+1)]
             close_orders_logit = symbol_action[:-2]
             hold_logit = symbol_action[-2]
-            volume = symbol_action[-1]
+            volume = symbol_action[-1] * 100
 
-            close_orders_probability = expit(close_orders_logit)
-            hold_probability = expit(hold_logit)
-            hold = bool(hold_probability > self.hold_threshold)
+            close_orders_probability = (close_orders_logit + 1) / 2.
+            hold_probability = (hold_logit + 1) / 2.
+            hold = bool(self.np_rng.binomial(1, p=hold_probability))
+
             modified_volume = self._get_modified_volume(symbol, volume)
-
             symbol_orders = self.simulator.symbol_orders(symbol)
-            orders_to_close_index = np.where(
-                close_orders_probability[:len(symbol_orders)] > self.close_threshold
-            )[0]
+            closes = self.np_rng.binomial(1, p=close_orders_probability[:len(symbol_orders)],
+                                          size=close_orders_probability[:len(symbol_orders)].shape)
+            orders_to_close_index = np.where(closes == 1)[0]
             orders_to_close = np.array(symbol_orders)[orders_to_close_index]
 
             for j, order in enumerate(orders_to_close):
@@ -229,13 +241,16 @@ class MtEnv(gym.Env):
             'features': features,
             'orders': orders,
         }
+        if self.preprocess is not None:
+            for k in observation.keys():
+                observation[k] = self.preprocess(observation[k]).copy()
         return observation
 
     def _calculate_reward(self) -> float:
         prev_equity = self.history[-1]['equity']
         current_equity = self.simulator.equity
         step_reward = current_equity - prev_equity
-        return step_reward
+        return (step_reward / self.initial_balance) * 100.
 
     def _create_info(self, **kwargs: Any) -> Dict[str, Any]:
         info = {k: v for k, v in kwargs.items()}
