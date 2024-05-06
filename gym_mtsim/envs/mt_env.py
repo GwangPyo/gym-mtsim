@@ -161,11 +161,15 @@ class MtEnv(gym.Env):
 
             modified_volume = self._get_modified_volume(symbol, volume)
             symbol_orders = self.simulator.symbol_orders(symbol)
-            prob = close_orders_probability[:len(symbol_orders)]
+            if len(symbol_orders) > 0:
+                prob = close_orders_probability[:len(symbol_orders)]
+                closes = np.asarray([self.np_rng.choice([False, True], p=[1-p, p])for p in prob])
+                print(len(closes))
+                orders_to_close_index = np.where(closes)[0]
+                orders_to_close = np.array(symbol_orders)[orders_to_close_index]
 
-            closes = self.np_rng.choice([False, True], p=[1 - prob, prob], size=prob.shape)
-            orders_to_close_index = np.where(closes == 1)[0]
-            orders_to_close = np.array(symbol_orders)[orders_to_close_index]
+            else:
+                orders_to_close = []
 
             for j, order in enumerate(orders_to_close):
                 self.simulator.close_order(order)
