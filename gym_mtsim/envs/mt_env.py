@@ -31,6 +31,7 @@ class MtEnv(gym.Env):
             multiprocessing_processes: Optional[int] = None,
             render_mode: Optional[str] = None,
             preprocess: Optional[Callable] = np.arcsinh,
+            risk_free_rate: float = 0.02,
             randomize_initial_balance: bool = False,
             initial_balance_kwargs: Optional[Tuple[float, float]] = None,
             time_split: bool = False,
@@ -110,6 +111,7 @@ class MtEnv(gym.Env):
         self.time_split = time_split
         self.min_time_split_length = min_time_split_length
         self.max_time_split_length = max_time_limit
+        self.risk_free_rate = risk_free_rate
 
     def reset(self, seed=None, options=None) -> Dict[str, np.ndarray]:
         super().reset(seed=seed, options=options)
@@ -157,8 +159,9 @@ class MtEnv(gym.Env):
         )
         observation = self._get_observation()
         self.history.append(info)
-
-        return observation, step_reward, terminal, self._truncated, info
+        # risk premium. To prevent "do nothing" convergence
+        risk_premium_cost = self.simulator.balance * self.risk_free_rate / 365.25
+        return observation, step_reward - risk_premium_cost, terminal, self._truncated, info
 
     def _apply_action(self, action: np.ndarray) -> Tuple[Dict, Dict]:
         orders_info = {}
