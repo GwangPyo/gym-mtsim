@@ -37,6 +37,7 @@ class MtEnv(gym.Env):
             time_split: bool = False,
             min_time_split_length: int = 10,
             max_time_limit: int = 200,
+            risk_premium: bool = False,
             seed: int = 42,
     ) -> None:
         # validations
@@ -112,6 +113,7 @@ class MtEnv(gym.Env):
         self.min_time_split_length = min_time_split_length
         self.max_time_split_length = max_time_limit
         self.risk_free_rate = risk_free_rate
+        self.risk_premium = risk_premium
 
     def reset(self, seed=None, options=None) -> Dict[str, np.ndarray]:
         super().reset(seed=seed, options=options)
@@ -160,8 +162,10 @@ class MtEnv(gym.Env):
         observation = self._get_observation()
         self.history.append(info)
         # risk premium. To prevent "do nothing" convergence
-        risk_premium_cost = self.simulator.balance * self.risk_free_rate / 365.25
-        return observation, step_reward - risk_premium_cost, terminal, self._truncated, info
+        if self.risk_premium:
+            step_reward = step_reward - float(self.simulator.balance * self.risk_free_rate / 365.25)
+
+        return observation, step_reward, terminal, self._truncated, info
 
     def _apply_action(self, action: np.ndarray) -> Tuple[Dict, Dict]:
         orders_info = {}
