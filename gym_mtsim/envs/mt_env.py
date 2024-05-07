@@ -31,13 +31,14 @@ class MtEnv(gym.Env):
             multiprocessing_processes: Optional[int] = None,
             render_mode: Optional[str] = None,
             preprocess: Optional[Callable] = np.arcsinh,
-            risk_free_rate: float = 0.02,
             randomize_initial_balance: bool = False,
             initial_balance_kwargs: Optional[Tuple[float, float]] = None,
             time_split: bool = False,
             min_time_split_length: int = 10,
+            risk_free_rate: float = 0.02,
             max_time_limit: int = 200,
             risk_premium: bool = False,
+            done_if_equity_zero: bool = False,
             seed: int = 42,
     ) -> None:
         # validations
@@ -114,6 +115,7 @@ class MtEnv(gym.Env):
         self.max_time_split_length = max_time_limit
         self.risk_free_rate = risk_free_rate
         self.risk_premium = risk_premium
+        self.done_if_equity_zero = done_if_equity_zero
 
     def reset(self, seed=None, options=None) -> Dict[str, np.ndarray]:
         super().reset(seed=seed, options=options)
@@ -155,7 +157,10 @@ class MtEnv(gym.Env):
         self.simulator.tick(dt)
 
         step_reward = self._calculate_reward()
-        terminal = (self.simulator.equity == 0)  # bankrupt is done
+        if self.done_if_equity_zero:
+            terminal = (self.simulator.equity == 0)  # bankrupt is done
+        else:
+            terminal = False
         info = self._create_info(
             orders=orders_info, closed_orders=closed_orders_info, step_reward=step_reward
         )
