@@ -39,6 +39,8 @@ class MtEnv(gym.Env):
             max_time_limit: int = 200,
             risk_premium: bool = False,
             done_if_equity_zero: bool = False,
+            loss_cut: Optional[float] = None,
+            log_loss: bool = False,
             seed: int = 42,
     ) -> None:
         # validations
@@ -116,6 +118,8 @@ class MtEnv(gym.Env):
         self.risk_free_rate = risk_free_rate
         self.risk_premium = risk_premium
         self.done_if_equity_zero = done_if_equity_zero
+        self.loss_cut = loss_cut
+        self.log_loss = log_loss
 
     def reset(self, seed=None, options=None) -> Dict[str, np.ndarray]:
         super().reset(seed=seed, options=options)
@@ -155,12 +159,18 @@ class MtEnv(gym.Env):
 
         dt = self.time_points[self._current_tick] - self.time_points[self._current_tick - 1]
         self.simulator.tick(dt)
-
-        step_reward = self._calculate_reward()
+        if self.log_loss:
+            step_reward = self._calculate_log_reward()
+        else:
+            step_reward = self._calculate_reward()
         if self.done_if_equity_zero:
             terminal = (self.simulator.equity == 0)  # bankrupt is done
         else:
             terminal = False
+
+        if self.loss_cut is not None:
+            terminal = ((self.simulator.equity / self.initial_balance) < self.loss_cut)
+
         info = self._create_info(
             orders=orders_info, closed_orders=closed_orders_info, step_reward=step_reward
         )
@@ -284,6 +294,15 @@ class MtEnv(gym.Env):
         current_equity = self.simulator.equity
         step_reward = current_equity - prev_equity
         return (step_reward / self.initial_balance) * 100.
+
+    def _calculate_log_reward(self) -> float:
+        prev_equity = self.history[-1]['equity']
+        current_equity = self.simulator.equity
+        if prev_equity > 1e-2:
+            step_reward = np.log(current_equity / prev_equity)
+        else:
+            step_reward = -1000
+        return step_reward
 
     def _create_info(self, **kwargs: Any) -> Dict[str, Any]:
         info = {k: v for k, v in kwargs.items()}
