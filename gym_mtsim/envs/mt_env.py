@@ -40,7 +40,7 @@ class MtEnv(gym.Env):
             risk_premium: bool = False,
             done_if_equity_zero: bool = False,
             loss_cut: Optional[float] = None,
-            log_loss: bool = False,
+            log_reward: bool = False,
             seed: int = 42,
     ) -> None:
         # validations
@@ -119,7 +119,8 @@ class MtEnv(gym.Env):
         self.risk_premium = risk_premium
         self.done_if_equity_zero = done_if_equity_zero
         self.loss_cut = loss_cut
-        self.log_loss = log_loss
+        self.log_reward = log_reward
+        self.logit_thresh = 0.3
 
     def reset(self, seed=None, options=None) -> Dict[str, np.ndarray]:
         super().reset(seed=seed, options=options)
@@ -159,7 +160,7 @@ class MtEnv(gym.Env):
 
         dt = self.time_points[self._current_tick] - self.time_points[self._current_tick - 1]
         self.simulator.tick(dt)
-        if self.log_loss:
+        if self.log_reward:
             step_reward = self._calculate_log_reward()
         else:
             step_reward = self._calculate_reward()
@@ -195,13 +196,20 @@ class MtEnv(gym.Env):
             volume = symbol_action[-1] * 100
 
             close_orders_probability = (close_orders_logit + 1) / 2.
+            close_orders_probability = np.where(close_orders_probability < self.logit_thresh, 0)
+            close_orders_probability = np.where(close_orders_probability > 1 - self.logit_thresh, 1)
+
             hold_probability = (hold_logit + 1) / 2.
+            hold_probability = np.where(hold_probability < self.logit_thresh, 0.)
+            hold_probability = np.where(hold_probability > 1 - self.logit_thresh, 1)
+
             hold = self.np_rng.choice([False, True], p=[1 - hold_probability, hold_probability])
 
             modified_volume = self._get_modified_volume(symbol, volume)
             symbol_orders = self.simulator.symbol_orders(symbol)
             if len(symbol_orders) > 0:
                 prob = close_orders_probability[:len(symbol_orders)]
+
                 closes = np.asarray([self.np_rng.choice([False, True], p=[1 - p, p]) for p in prob])
                 orders_to_close_index = np.where(closes)[0]
                 orders_to_close = np.array(symbol_orders)[orders_to_close_index]
