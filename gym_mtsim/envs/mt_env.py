@@ -196,12 +196,14 @@ class MtEnv(gym.Env):
             volume = symbol_action[-1] * 100
 
             close_orders_probability = (close_orders_logit + 1) / 2.
-            close_orders_probability = np.where(close_orders_probability < self.logit_thresh, 0)
-            close_orders_probability = np.where(close_orders_probability > 1 - self.logit_thresh, 1)
+            close_orders_probability = np.where(close_orders_probability < self.logit_thresh, 0.,
+                                                close_orders_probability)
+            close_orders_probability = np.where(close_orders_probability > 1 - self.logit_thresh, 1,
+                                                close_orders_probability)
 
             hold_probability = (hold_logit + 1) / 2.
-            hold_probability = np.where(hold_probability < self.logit_thresh, 0.)
-            hold_probability = np.where(hold_probability > 1 - self.logit_thresh, 1)
+            hold_probability = np.where(hold_probability < self.logit_thresh, 0., hold_probability)
+            hold_probability = np.where(hold_probability > 1 - self.logit_thresh, 1, hold_probability)
 
             hold = self.np_rng.choice([False, True], p=[1 - hold_probability, hold_probability])
 
