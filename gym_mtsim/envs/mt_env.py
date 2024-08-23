@@ -17,6 +17,7 @@ from gymnasium import spaces
 from ..simulator import MtSimulator, OrderType
 
 
+
 class MtEnv(gym.Env):
     metadata = {'render_modes': ['human', 'simple_figure', 'advanced_figure']}
 
@@ -195,15 +196,8 @@ class MtEnv(gym.Env):
             hold_logit = symbol_action[-2]
             volume = symbol_action[-1] * 100
 
-            close_orders_probability = (close_orders_logit + 1) / 2.
-            close_orders_probability = np.where(close_orders_probability < self.logit_thresh, 0.,
-                                                close_orders_probability)
-            close_orders_probability = np.where(close_orders_probability > 1 - self.logit_thresh, 1,
-                                                close_orders_probability)
-
+            close_orders_probability = (close_orders_logit + 1) / 2
             hold_probability = (hold_logit + 1) / 2.
-            hold_probability = np.where(hold_probability < self.logit_thresh, 0., hold_probability)
-            hold_probability = np.where(hold_probability > 1 - self.logit_thresh, 1, hold_probability)
 
             hold = self.np_rng.choice([False, True], p=[1 - hold_probability, hold_probability])
 
@@ -308,10 +302,10 @@ class MtEnv(gym.Env):
     def _calculate_log_reward(self) -> float:
         prev_equity = self.history[-1]['equity']
         current_equity = self.simulator.equity
-        if prev_equity > 1e-2:
-            step_reward = np.log(current_equity / prev_equity)
+        if prev_equity > 0 and current_equity > 0:
+            step_reward = np.log(current_equity/ prev_equity)
         else:
-            step_reward = -1000
+            step_reward = -10
         return step_reward
 
     def _create_info(self, **kwargs: Any) -> Dict[str, Any]:
