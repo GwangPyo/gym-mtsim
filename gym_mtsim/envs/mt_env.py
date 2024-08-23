@@ -196,8 +196,11 @@ class MtEnv(gym.Env):
             hold_logit = symbol_action[-2]
             volume = symbol_action[-1] * 100
 
-            close_orders_probability = (close_orders_logit + 1) / 2
-            hold_probability = (hold_logit + 1) / 2.
+            close_orders_logit = np.arctanh(close_orders_logit.clip(-1+1e-3, 1-1e-3))
+            hold_logit = np.arctanh(hold_logit.clip(-1+1e-3, 1-1e-3))
+
+            close_orders_probability = expit(close_orders_logit)
+            hold_probability = expit(hold_logit)
 
             hold = self.np_rng.choice([False, True], p=[1 - hold_probability, hold_probability])
 
