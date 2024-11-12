@@ -6,7 +6,7 @@ from pathos.multiprocessing import ProcessingPool as Pool
 
 import numpy as np
 from scipy.special import expit
-from .misc import make_log_normal_parameter
+
 import matplotlib.pyplot as plt
 import matplotlib.cm as plt_cm
 import matplotlib.colors as plt_colors
@@ -14,41 +14,32 @@ import plotly.graph_objects as go
 
 import gymnasium as gym
 from gymnasium import spaces
+
 from ..simulator import MtSimulator, OrderType
 
 
-
 class MtEnv(gym.Env):
+
     metadata = {'render_modes': ['human', 'simple_figure', 'advanced_figure']}
 
     def __init__(
-            self,
-            original_simulator: MtSimulator,
-            trading_symbols: List[str],
-            window_size: int,
-            time_points: Optional[List[datetime]] = None,
-            fee: Union[float, Callable[[str], float]] = 0.0005,
-            symbol_max_orders: int = 1,
-            multiprocessing_processes: Optional[int] = None,
-            render_mode: Optional[str] = None,
-            preprocess: Optional[Callable] = np.arcsinh,
-            randomize_initial_balance: bool = False,
-            initial_balance_kwargs: Optional[Tuple[float, float]] = None,
-            time_split: bool = False,
-            min_time_split_length: int = 10,
-            risk_free_rate: float = 0.02,
-            max_time_limit: int = 200,
-            risk_premium: bool = False,
-            done_if_equity_zero: bool = False,
-            loss_cut: Optional[float] = None,
-            log_reward: bool = False,
-            seed: int = 42,
+        self,
+        original_simulator: MtSimulator,
+        trading_symbols: List[str],
+        window_size: int,
+        time_points: Optional[List[datetime]] = None,
+        hold_threshold: float = 0.5,
+        close_threshold: float = 0.5,
+        fee: Union[float, Callable[[str], float]] = 0.0005,
+        symbol_max_orders: int = 1,
+        multiprocessing_processes: Optional[int] = None,
+        render_mode: Optional[str] = None,
     ) -> None:
         # validations
         assert len(original_simulator.symbols_data) > 0, "no data available"
         assert len(original_simulator.symbols_info) > 0, "no data available"
         assert len(trading_symbols) > 0, "no trading symbols provided"
-        self.np_rng = np.random.default_rng(seed)
+        assert 0. <= hold_threshold <= 1., "'hold_threshold' must be in range [0., 1.]"
 
         if not original_simulator.hedge:
             symbol_max_orders = 1
@@ -57,7 +48,7 @@ class MtEnv(gym.Env):
             assert symbol in original_simulator.symbols_info, f"symbol '{symbol}' not found"
             currency_profit = original_simulator.symbols_info[symbol].currency_profit
             assert original_simulator._get_unit_symbol_info(currency_profit) is not None, \
-                f"unit symbol for '{currency_profit}' not found"
+                   f"unit symbol for '{currency_profit}' not found"
 
         if time_points is None:
             time_points = original_simulator.symbols_data[trading_symbols[0]].index.to_pydatetime().tolist()
@@ -70,6 +61,8 @@ class MtEnv(gym.Env):
         self.trading_symbols = trading_symbols
         self.window_size = window_size
         self.time_points = time_points
+        self.hold_threshold = hold_threshold
+        self.close_threshold = close_threshold
         self.fee = fee
         self.symbol_max_orders = symbol_max_orders
         self.multiprocessing_pool = Pool(multiprocessing_processes) if multiprocessing_processes else None
@@ -80,7 +73,7 @@ class MtEnv(gym.Env):
 
         # spaces
         self.action_space = spaces.Box(
-            low=-1., high=1., dtype=np.float64,
+            low=-1e2, high=1e2, dtype=np.float64,
             shape=(len(self.trading_symbols) * (self.symbol_max_orders + 2),)
         )  # symbol -> [close_order_i(logit), hold(logit), volume]
 
@@ -90,6 +83,7 @@ class MtEnv(gym.Env):
             'equity': spaces.Box(low=-INF, high=INF, shape=(1,), dtype=np.float64),
             'margin': spaces.Box(low=-INF, high=INF, shape=(1,), dtype=np.float64),
             'features': spaces.Box(low=-INF, high=INF, shape=self.features_shape, dtype=np.float64),
+            'max_volumes': spaces.Box(low=-INF, high=INF, shape=(len(self.trading_symbols), ), dtype=np.float64),
             'orders': spaces.Box(
                 low=-INF, high=INF, dtype=np.float64,
                 shape=(len(self.trading_symbols), self.symbol_max_orders, 3)
@@ -99,124 +93,62 @@ class MtEnv(gym.Env):
         # episode
         self._start_tick = self.window_size - 1
         self._end_tick = len(self.time_points) - 1
-
-        self._initial_start_tick = self.window_size - 1
-        self._max_end_tick = len(self.time_points) - 1
-
-        self.preprocess = preprocess
         self._truncated: bool = NotImplemented
         self._current_tick: int = NotImplemented
         self.simulator: MtSimulator = NotImplemented
         self.history: List[Dict[str, Any]] = NotImplemented
-        self.initial_balance: float = NotImplemented
-        self.randomize_initial_balance: bool = randomize_initial_balance
-        if initial_balance_kwargs is None:
-            initial_balance_kwargs = make_log_normal_parameter(10000, 1000)
-        self.initial_balance_kwargs = initial_balance_kwargs
-        self.time_split = time_split
-        self.min_time_split_length = min_time_split_length
-        self.max_time_split_length = max_time_limit
-        self.risk_free_rate = risk_free_rate
-        self.risk_premium = risk_premium
-        self.done_if_equity_zero = done_if_equity_zero
-        self.loss_cut = loss_cut
-        self.log_reward = log_reward
-        self.logit_thresh = 0.3
 
-    def reset(self, seed=None, options=None) -> Dict[str, np.ndarray]:
+    def reset(self, seed=None, options=None) -> Tuple[Dict[str, np.ndarray], Dict]:
         super().reset(seed=seed, options=options)
-        if seed is not None:
-            self.np_rng = np.random.default_rng(seed=seed)
-
         self._truncated = False
         self._current_tick = self._start_tick
         self.simulator = copy.deepcopy(self.original_simulator)
-        self.initial_balance = copy.deepcopy(self.simulator.balance)
-        if self.randomize_initial_balance:
-            self.simulator.equity = self.np_rng.lognormal(*self.initial_balance_kwargs)
-            self.simulator.balance = copy.deepcopy(self.simulator.equity)
-            self.initial_balance = copy.deepcopy(self.simulator.balance)
-        if self.time_split:
-            min_time_split_length = self.min_time_split_length
-            self._start_tick = self.np_rng.integers(self._initial_start_tick,
-                                                    self._max_end_tick - min_time_split_length)
-            high = min(self._max_end_tick, self._start_tick + self.max_time_split_length)
-            self._end_tick = self.np_rng.integers(low=self._start_tick + min_time_split_length,
-                                                  high=high)
-            self._current_tick = self._start_tick
-
         self.simulator.current_time = self.time_points[self._current_tick]
         self.history = [self._create_info()]
+
         observation = self._get_observation()
         info = self._create_info()
-
         return observation, info
 
-    def step(self, action: np.ndarray) -> Tuple[Dict[str, np.ndarray], float, bool, Dict[str, Any]]:
+    def step(self, action: np.ndarray) -> Tuple[Dict[str, np.ndarray], float, bool, bool, Dict[str, Any]]:
         orders_info, closed_orders_info = self._apply_action(action)
-
         self._current_tick += 1
         if self._current_tick == self._end_tick:
             self._truncated = True
 
         dt = self.time_points[self._current_tick] - self.time_points[self._current_tick - 1]
         self.simulator.tick(dt)
-        if self.log_reward:
-            step_reward = self._calculate_log_reward()
-        else:
-            step_reward = self._calculate_reward()
-        if self.done_if_equity_zero:
-            terminal = (self.simulator.equity == 0)  # bankrupt is done
-        else:
-            terminal = False
-
-        if self.loss_cut is not None:
-            terminal = ((self.simulator.equity / self.initial_balance) < self.loss_cut)
-
+        step_reward = self._calculate_reward()
         info = self._create_info(
             orders=orders_info, closed_orders=closed_orders_info, step_reward=step_reward
         )
         observation = self._get_observation()
         self.history.append(info)
-        # risk premium. To prevent "do nothing" convergence
-        if self.risk_premium:
-            step_reward = step_reward - float(self.simulator.balance * self.risk_free_rate / 365.25)
-
-        return observation, step_reward, terminal, self._truncated, info
+        return observation, step_reward, False, self._truncated, info
 
     def _apply_action(self, action: np.ndarray) -> Tuple[Dict, Dict]:
         orders_info = {}
         closed_orders_info = {symbol: [] for symbol in self.trading_symbols}
-
         k = self.symbol_max_orders + 2
-
+        # Apply modified maximal volume
+        max_vols = self.simulator.calculate_max_volume()
         for i, symbol in enumerate(self.trading_symbols):
-            symbol_action = action[k * i:k * (i + 1)]
+            symbol_action = action[k*i:k*(i+1)]
             close_orders_logit = symbol_action[:-2]
             hold_logit = symbol_action[-2]
-            volume = symbol_action[-1] * 100
-
-            close_orders_logit = np.arctanh(close_orders_logit.clip(-1+1e-3, 1-1e-3))
-            hold_logit = np.arctanh(hold_logit.clip(-1+1e-3, 1-1e-3))
-
+            volume = symbol_action[-1].item()
             close_orders_probability = expit(close_orders_logit)
             hold_probability = expit(hold_logit)
-
-            hold = self.np_rng.choice([False, True], p=[1 - hold_probability, hold_probability])
-
-            modified_volume = self._get_modified_volume(symbol, volume)
+            hold = bool(hold_probability > self.hold_threshold)
+            modified_volume = self._get_modified_volume(symbol, volume, max_vols)
             symbol_orders = self.simulator.symbol_orders(symbol)
-            if len(symbol_orders) > 0:
-                prob = close_orders_probability[:len(symbol_orders)]
-
-                closes = np.asarray([self.np_rng.choice([False, True], p=[1 - p, p]) for p in prob])
-                orders_to_close_index = np.where(closes)[0]
-                orders_to_close = np.array(symbol_orders)[orders_to_close_index]
-
-            else:
-                orders_to_close = []
+            orders_to_close_index = np.where(
+                close_orders_probability[:len(symbol_orders)] > self.close_threshold
+            )[0]
+            orders_to_close = np.array(symbol_orders)[orders_to_close_index]
 
             for j, order in enumerate(orders_to_close):
+
                 self.simulator.close_order(order)
                 closed_orders_info[symbol].append(dict(
                     order_id=order.id, symbol=order.symbol, order_type=order.type,
@@ -249,12 +181,10 @@ class MtEnv(gym.Env):
                     )
                 except ValueError as e:
                     new_info = dict(error=str(e))
-
                 orders_info[symbol].update(new_info)
-
         return orders_info, closed_orders_info
 
-    def _get_prices(self, keys: List[str] = ['Close', 'Open']) -> Dict[str, np.ndarray]:
+    def _get_prices(self, keys: List[str]=['Close', 'Open']) -> Dict[str, np.ndarray]:
         prices = {}
 
         for symbol in self.trading_symbols:
@@ -276,9 +206,10 @@ class MtEnv(gym.Env):
         return signal_features
 
     def _get_observation(self) -> Dict[str, np.ndarray]:
-        features = self.signal_features[(self._current_tick - self.window_size + 1):(self._current_tick + 1)]
+        features = self.signal_features[(self._current_tick-self.window_size+1):(self._current_tick+1)]
 
         orders = np.zeros(self.observation_space['orders'].shape)
+
         for i, symbol in enumerate(self.trading_symbols):
             symbol_orders = self.simulator.symbol_orders(symbol)
             for j, order in enumerate(symbol_orders):
@@ -289,26 +220,15 @@ class MtEnv(gym.Env):
             'equity': np.array([self.simulator.equity]),
             'margin': np.array([self.simulator.margin]),
             'features': features,
+            'max_volumes': self.simulator.calculate_max_volume(),
             'orders': orders,
         }
-        if self.preprocess is not None:
-            for k in observation.keys():
-                observation[k] = self.preprocess(observation[k]).copy()
         return observation
 
     def _calculate_reward(self) -> float:
         prev_equity = self.history[-1]['equity']
         current_equity = self.simulator.equity
         step_reward = current_equity - prev_equity
-        return (step_reward / self.initial_balance) * 100.
-
-    def _calculate_log_reward(self) -> float:
-        prev_equity = self.history[-1]['equity']
-        current_equity = self.simulator.equity
-        if prev_equity > 0 and current_equity > 0:
-            step_reward = np.log(current_equity/ prev_equity)
-        else:
-            step_reward = -10
         return step_reward
 
     def _create_info(self, **kwargs: Any) -> Dict[str, Any]:
@@ -320,14 +240,15 @@ class MtEnv(gym.Env):
         info['margin_level'] = self.simulator.margin_level
         return info
 
-    def _get_modified_volume(self, symbol: str, volume: float) -> float:
+    def _get_modified_volume(self, symbol: str, volume: float, max_vol_dict) -> float:
         si = self.simulator.symbols_info[symbol]
-        v = abs(volume)
+        max_vol = max_vol_dict[symbol]
+        v = abs(volume) / 100 * max_vol
         v = np.clip(v, si.volume_min, si.volume_max)
         v = round(v / si.volume_step) * si.volume_step
         return v
 
-    def render(self, mode: str = 'human', **kwargs: Any) -> Any:
+    def render(self, mode: str='human', **kwargs: Any) -> Any:
         if mode == 'simple_figure':
             return self._render_simple_figure(**kwargs)
         if mode == 'advanced_figure':
@@ -335,7 +256,7 @@ class MtEnv(gym.Env):
         return self.simulator.get_state(**kwargs)
 
     def _render_simple_figure(
-            self, figsize: Tuple[float, float] = (14, 6), return_figure: bool = False
+        self, figsize: Tuple[float, float]=(14, 6), return_figure: bool=False
     ) -> Any:
         fig, ax = plt.subplots(figsize=figsize, facecolor='white')
 
@@ -402,10 +323,10 @@ class MtEnv(gym.Env):
         plt.show()
 
     def _render_advanced_figure(
-            self,
-            figsize: Tuple[float, float] = (1400, 600),
-            time_format: str = "%Y-%m-%d %H:%m",
-            return_figure: bool = False,
+        self,
+        figsize: Tuple[float, float] = (1400, 600),
+        time_format: str = "%Y-%m-%d %H:%m",
+        return_figure: bool = False,
     ) -> Any:
         fig = go.Figure()
 
@@ -437,13 +358,13 @@ class MtEnv(gym.Env):
                     opacity=1.0,
                     hovertext=extra_info,
                     name=symbol,
-                    yaxis=f'y{j + 1}',
-                    legendgroup=f'g{j + 1}',
+                    yaxis=f'y{j+1}',
+                    legendgroup=f'g{j+1}',
                 ),
             )
 
             fig.update_layout(**{
-                f'yaxis{j + 1}': dict(
+                f'yaxis{j+1}': dict(
                     tickfont=dict(color=get_color_string(symbol_color * [1, 1, 1, 0.8])),
                     overlaying='y' if j > 0 else None,
                     # position=0.035*j
@@ -521,9 +442,9 @@ class MtEnv(gym.Env):
                     marker_color=trade_colors,
                     marker_size=trade_sizes,
                     name=symbol,
-                    yaxis=f'y{j + 1}',
+                    yaxis=f'y{j+1}',
                     showlegend=False,
-                    legendgroup=f'g{j + 1}',
+                    legendgroup=f'g{j+1}',
                 ),
             )
 
@@ -538,9 +459,9 @@ class MtEnv(gym.Env):
                     marker_size=7,
                     marker_line_width=1.5,
                     name=symbol,
-                    yaxis=f'y{j + 1}',
+                    yaxis=f'y{j+1}',
                     showlegend=False,
-                    legendgroup=f'g{j + 1}',
+                    legendgroup=f'g{j+1}',
                 ),
             )
 
@@ -565,3 +486,4 @@ class MtEnv(gym.Env):
 
     def close(self) -> None:
         plt.close()
+
