@@ -19,21 +19,21 @@ from ..simulator import MtSimulator, OrderType
 
 
 class MtEnv(gym.Env):
-
     metadata = {'render_modes': ['human', 'simple_figure', 'advanced_figure']}
 
     def __init__(
-        self,
-        original_simulator: MtSimulator,
-        trading_symbols: List[str],
-        window_size: int,
-        time_points: Optional[List[datetime]] = None,
-        hold_threshold: float = 0.5,
-        close_threshold: float = 0.5,
-        fee: Union[float, Callable[[str], float]] = 0.0005,
-        symbol_max_orders: int = 1,
-        multiprocessing_processes: Optional[int] = None,
-        render_mode: Optional[str] = None,
+            self,
+            original_simulator: MtSimulator,
+            trading_symbols: List[str],
+            window_size: int,
+            time_points: Optional[List[datetime]] = None,
+            hold_threshold: float = 0.5,
+            close_threshold: float = 0.5,
+            fee: Union[float, Callable[[str], float]] = 0.0005,
+            symbol_max_orders: int = 1,
+            multiprocessing_processes: Optional[int] = None,
+            render_mode: Optional[str] = None,
+
     ) -> None:
         # validations
         assert len(original_simulator.symbols_data) > 0, "no data available"
@@ -48,7 +48,7 @@ class MtEnv(gym.Env):
             assert symbol in original_simulator.symbols_info, f"symbol '{symbol}' not found"
             currency_profit = original_simulator.symbols_info[symbol].currency_profit
             assert original_simulator._get_unit_symbol_info(currency_profit) is not None, \
-                   f"unit symbol for '{currency_profit}' not found"
+                f"unit symbol for '{currency_profit}' not found"
 
         if time_points is None:
             time_points = original_simulator.symbols_data[trading_symbols[0]].index.to_pydatetime().tolist()
@@ -57,6 +57,7 @@ class MtEnv(gym.Env):
         self.render_mode = render_mode
 
         # attributes
+
         self.original_simulator = original_simulator
         self.trading_symbols = trading_symbols
         self.window_size = window_size
@@ -83,7 +84,7 @@ class MtEnv(gym.Env):
             'equity': spaces.Box(low=-INF, high=INF, shape=(1,), dtype=np.float64),
             'margin': spaces.Box(low=-INF, high=INF, shape=(1,), dtype=np.float64),
             'features': spaces.Box(low=-INF, high=INF, shape=self.features_shape, dtype=np.float64),
-            'max_volumes': spaces.Box(low=-INF, high=INF, shape=(len(self.trading_symbols), ), dtype=np.float64),
+            'max_volumes': spaces.Box(low=-INF, high=INF, shape=(len(self.trading_symbols),), dtype=np.float64),
             'orders': spaces.Box(
                 low=-INF, high=INF, dtype=np.float64,
                 shape=(len(self.trading_symbols), self.symbol_max_orders, 3)
@@ -97,12 +98,14 @@ class MtEnv(gym.Env):
         self._current_tick: int = NotImplemented
         self.simulator: MtSimulator = NotImplemented
         self.history: List[Dict[str, Any]] = NotImplemented
+        self.initial_balance: float = original_simulator.balance
 
     def reset(self, seed=None, options=None) -> Tuple[Dict[str, np.ndarray], Dict]:
         super().reset(seed=seed, options=options)
         self._truncated = False
         self._current_tick = self._start_tick
         self.simulator = copy.deepcopy(self.original_simulator)
+        self.initial_balance = self.original_simulator.balance
         self.simulator.current_time = self.time_points[self._current_tick]
         self.history = [self._create_info()]
 
@@ -124,7 +127,12 @@ class MtEnv(gym.Env):
         )
         observation = self._get_observation()
         self.history.append(info)
-        return observation, step_reward, False, self._truncated, info
+
+        if self.simulator.equity <= 0:
+            done = True
+        else:
+            done = False
+        return observation, step_reward, done, self._truncated, info
 
     def _apply_action(self, action: np.ndarray) -> Tuple[Dict, Dict]:
         orders_info = {}
@@ -133,7 +141,7 @@ class MtEnv(gym.Env):
         # Apply modified maximal volume
         max_vols = self.simulator.calculate_max_volume()
         for i, symbol in enumerate(self.trading_symbols):
-            symbol_action = action[k*i:k*(i+1)]
+            symbol_action = action[k * i:k * (i + 1)]
             close_orders_logit = symbol_action[:-2]
             hold_logit = symbol_action[-2]
             volume = symbol_action[-1].item()
@@ -148,7 +156,6 @@ class MtEnv(gym.Env):
             orders_to_close = np.array(symbol_orders)[orders_to_close_index]
 
             for j, order in enumerate(orders_to_close):
-
                 self.simulator.close_order(order)
                 closed_orders_info[symbol].append(dict(
                     order_id=order.id, symbol=order.symbol, order_type=order.type,
@@ -184,7 +191,7 @@ class MtEnv(gym.Env):
                 orders_info[symbol].update(new_info)
         return orders_info, closed_orders_info
 
-    def _get_prices(self, keys: List[str]=['Close', 'Open']) -> Dict[str, np.ndarray]:
+    def _get_prices(self, keys: List[str] = ['Close', 'Open']) -> Dict[str, np.ndarray]:
         prices = {}
 
         for symbol in self.trading_symbols:
@@ -206,7 +213,7 @@ class MtEnv(gym.Env):
         return signal_features
 
     def _get_observation(self) -> Dict[str, np.ndarray]:
-        features = self.signal_features[(self._current_tick-self.window_size+1):(self._current_tick+1)]
+        features = self.signal_features[(self._current_tick - self.window_size + 1):(self._current_tick + 1)]
 
         orders = np.zeros(self.observation_space['orders'].shape)
 
@@ -214,22 +221,24 @@ class MtEnv(gym.Env):
             symbol_orders = self.simulator.symbol_orders(symbol)
             for j, order in enumerate(symbol_orders):
                 orders[i, j] = [order.entry_price, order.volume, order.profit]
+        max_vols = self.simulator.calculate_max_volume()
 
         observation = {
             'balance': np.array([self.simulator.balance]),
             'equity': np.array([self.simulator.equity]),
             'margin': np.array([self.simulator.margin]),
             'features': features,
-            'max_volumes': self.simulator.calculate_max_volume(),
+            'max_volumes': np.asarray([max_vols[k] for k in self.trading_symbols]),
             'orders': orders,
         }
         return observation
 
     def _calculate_reward(self) -> float:
+
         prev_equity = self.history[-1]['equity']
         current_equity = self.simulator.equity
         step_reward = current_equity - prev_equity
-        return step_reward
+        return (step_reward / self.initial_balance) * 100.
 
     def _create_info(self, **kwargs: Any) -> Dict[str, Any]:
         info = {k: v for k, v in kwargs.items()}
@@ -248,7 +257,7 @@ class MtEnv(gym.Env):
         v = round(v / si.volume_step) * si.volume_step
         return v
 
-    def render(self, mode: str='human', **kwargs: Any) -> Any:
+    def render(self, mode: str = 'human', **kwargs: Any) -> Any:
         if mode == 'simple_figure':
             return self._render_simple_figure(**kwargs)
         if mode == 'advanced_figure':
@@ -256,7 +265,7 @@ class MtEnv(gym.Env):
         return self.simulator.get_state(**kwargs)
 
     def _render_simple_figure(
-        self, figsize: Tuple[float, float]=(14, 6), return_figure: bool=False
+            self, figsize: Tuple[float, float] = (14, 6), return_figure: bool = False
     ) -> Any:
         fig, ax = plt.subplots(figsize=figsize, facecolor='white')
 
@@ -323,10 +332,10 @@ class MtEnv(gym.Env):
         plt.show()
 
     def _render_advanced_figure(
-        self,
-        figsize: Tuple[float, float] = (1400, 600),
-        time_format: str = "%Y-%m-%d %H:%m",
-        return_figure: bool = False,
+            self,
+            figsize: Tuple[float, float] = (1400, 600),
+            time_format: str = "%Y-%m-%d %H:%m",
+            return_figure: bool = False,
     ) -> Any:
         fig = go.Figure()
 
@@ -358,13 +367,13 @@ class MtEnv(gym.Env):
                     opacity=1.0,
                     hovertext=extra_info,
                     name=symbol,
-                    yaxis=f'y{j+1}',
-                    legendgroup=f'g{j+1}',
+                    yaxis=f'y{j + 1}',
+                    legendgroup=f'g{j + 1}',
                 ),
             )
 
             fig.update_layout(**{
-                f'yaxis{j+1}': dict(
+                f'yaxis{j + 1}': dict(
                     tickfont=dict(color=get_color_string(symbol_color * [1, 1, 1, 0.8])),
                     overlaying='y' if j > 0 else None,
                     # position=0.035*j
@@ -442,9 +451,9 @@ class MtEnv(gym.Env):
                     marker_color=trade_colors,
                     marker_size=trade_sizes,
                     name=symbol,
-                    yaxis=f'y{j+1}',
+                    yaxis=f'y{j + 1}',
                     showlegend=False,
-                    legendgroup=f'g{j+1}',
+                    legendgroup=f'g{j + 1}',
                 ),
             )
 
@@ -459,9 +468,9 @@ class MtEnv(gym.Env):
                     marker_size=7,
                     marker_line_width=1.5,
                     name=symbol,
-                    yaxis=f'y{j+1}',
+                    yaxis=f'y{j + 1}',
                     showlegend=False,
-                    legendgroup=f'g{j+1}',
+                    legendgroup=f'g{j + 1}',
                 ),
             )
 
@@ -486,4 +495,3 @@ class MtEnv(gym.Env):
 
     def close(self) -> None:
         plt.close()
-
