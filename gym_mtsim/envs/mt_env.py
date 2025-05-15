@@ -31,8 +31,12 @@ class MtEnv(gym.Env):
             close_threshold: float = 0.5,
             fee: Union[float, Callable[[str], float]] = 0.0005,
             symbol_max_orders: int = 1,
+            time_split: bool = False,
+            min_time_split_length: int = 10,
+            max_time_limit: int = 200,
             multiprocessing_processes: Optional[int] = None,
             render_mode: Optional[str] = None,
+            seed: int = 0,
 
     ) -> None:
         # validations
@@ -41,6 +45,7 @@ class MtEnv(gym.Env):
         assert len(trading_symbols) > 0, "no trading symbols provided"
         assert 0. <= hold_threshold <= 1., "'hold_threshold' must be in range [0., 1.]"
 
+        self.np_rng = np.random.default_rng(seed=seed)
         if not original_simulator.hedge:
             symbol_max_orders = 1
 
@@ -67,6 +72,11 @@ class MtEnv(gym.Env):
         self.fee = fee
         self.symbol_max_orders = symbol_max_orders
         self.multiprocessing_pool = Pool(multiprocessing_processes) if multiprocessing_processes else None
+        self.time_split = time_split
+        self.min_time_split_length = min_time_split_length
+        self.max_time_split_length = max_time_limit
+        self._initial_start_tick = self.window_size - 1
+        self._max_end_tick = len(self.time_points) - 1
 
         self.prices = self._get_prices()
         self.signal_features = self._process_data()
@@ -102,13 +112,25 @@ class MtEnv(gym.Env):
 
     def reset(self, seed=None, options=None) -> Tuple[Dict[str, np.ndarray], Dict]:
         super().reset(seed=seed, options=options)
+        if seed is not None:
+            self.np_rng = np.random.default_rng(seed=seed)
+
         self._truncated = False
         self._current_tick = self._start_tick
         self.simulator = copy.deepcopy(self.original_simulator)
         self.initial_balance = self.original_simulator.balance
         self.simulator.current_time = self.time_points[self._current_tick]
         self.history = [self._create_info()]
+        if self.time_split:
+            min_time_split_length = self.min_time_split_length
+            self._start_tick = self.np_rng.integers(self._initial_start_tick,
+                                                    self._max_end_tick - min_time_split_length)
+            high = min(self._max_end_tick, self._start_tick + self.max_time_split_length)
+            self._end_tick = self.np_rng.integers(low=self._start_tick + min_time_split_length,
+                                                  high=high)
+            self._current_tick = self._start_tick
 
+        self.simulator.current_time = self.time_points[self._current_tick]
         observation = self._get_observation()
         info = self._create_info()
         return observation, info
