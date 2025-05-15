@@ -83,7 +83,7 @@ class MtSimulator:
 
         for order in self.orders:
             order.exit_time = self.current_time
-            order.exit_price = self.price_at(order.symbol, order.exit_time)['Close']
+            order.exit_price = self.price_at(order.symbol, order.exit_time)['Close'].values.item()
             self._update_order_profit(order)
             self.equity += order.profit
 
@@ -135,7 +135,7 @@ class MtSimulator:
     ) -> Optional[Order]:
         order_id = len(self.closed_orders) + len(self.orders) + 1
         entry_time = self.current_time
-        entry_price = self.price_at(symbol, entry_time)['Close']
+        entry_price = self.price_at(symbol, entry_time)['Close'].values.item()
         exit_time = entry_time
         exit_price = entry_price
 
@@ -211,7 +211,7 @@ class MtSimulator:
             raise OrderNotFound("order not found in the order list")
 
         order.exit_time = self.current_time
-        order.exit_price = self.price_at(order.symbol, order.exit_time)['Close']
+        order.exit_price = self.price_at(order.symbol, order.exit_time)['Close'].values.item()
         self._update_order_profit(order)
 
         self.balance += order.profit
@@ -275,14 +275,14 @@ class MtSimulator:
             return 1.
 
         if self.unit == symbol_info.currency_margin:
-            return 1 / self.price_at(symbol, time)['Close']
+            return 1 / self.price_at(symbol, time)['Close'].values.item()
 
         currency = symbol_info.currency_profit
         unit_symbol_info = self._get_unit_symbol_info(currency)
         if unit_symbol_info is None:
             raise SymbolNotFound(f"unit symbol for '{currency}' not found")
 
-        unit_price = self.price_at(unit_symbol_info.name, time)['Close']
+        unit_price = self.price_at(unit_symbol_info.name, time)['Close'].values.item()
         if unit_symbol_info.currency_margin == self.unit:
             unit_price = 1. / unit_price
 
@@ -300,6 +300,7 @@ class MtSimulator:
 
     def _check_volume(self, symbol: str, volume: float) -> None:
         symbol_info = self.symbols_info[symbol]
+
 
         if not (symbol_info.volume_min <= volume <= symbol_info.volume_max):
             raise ValueError(
@@ -320,9 +321,12 @@ class MtSimulator:
             symbol_info = self.symbols_info[symbol]
             trade_contract_size = symbol_info.trade_contract_size
             margin_rate = symbol_info.margin_rate
-            entry_price = self.price_at(symbol, entry_time)['Close']
+
+            entry_price = self.price_at(symbol, entry_time)['Close'].values.item()
             unit_ratio = self._get_unit_ratio(symbol, entry_time)
+
             margin_per_volume = trade_contract_size * entry_price / self.leverage * margin_rate * unit_ratio
+
             max_volume = (self.free_margin * self.stop_out_level) / margin_per_volume
             max_volumes[symbol] = max_volume
         return max_volumes

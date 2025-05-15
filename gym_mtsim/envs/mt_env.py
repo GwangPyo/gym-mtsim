@@ -84,7 +84,7 @@ class MtEnv(gym.Env):
 
         # spaces
         self.action_space = spaces.Box(
-            low=-1e2, high=1e2, dtype=np.float64,
+            low=-1, high=1, dtype=np.float64,
             shape=(len(self.trading_symbols) * (self.symbol_max_orders + 2),)
         )  # symbol -> [close_order_i(logit), hold(logit), volume]
 
@@ -166,9 +166,9 @@ class MtEnv(gym.Env):
             symbol_action = action[k * i:k * (i + 1)]
             close_orders_logit = symbol_action[:-2]
             hold_logit = symbol_action[-2]
-            volume = symbol_action[-1].item()
-            close_orders_probability = expit(close_orders_logit)
-            hold_probability = expit(hold_logit)
+            volume = symbol_action[-1].item() * 100
+            close_orders_probability = (close_orders_logit + 1) / 2
+            hold_probability = (hold_logit + 1) / 2
             hold = bool(hold_probability > self.hold_threshold)
             modified_volume = self._get_modified_volume(symbol, volume, max_vols)
             symbol_orders = self.simulator.symbol_orders(symbol)
@@ -210,6 +210,7 @@ class MtEnv(gym.Env):
                     )
                 except ValueError as e:
                     new_info = dict(error=str(e))
+
                 orders_info[symbol].update(new_info)
         return orders_info, closed_orders_info
 
@@ -273,12 +274,22 @@ class MtEnv(gym.Env):
 
     def _get_modified_volume(self, symbol: str, volume: float, max_vol_dict) -> float:
         si = self.simulator.symbols_info[symbol]
-        max_vol = max_vol_dict[symbol]
+
+        entry_price = self.simulator.price_at(symbol, self.simulator.current_time)['Close'].values.item()
+        unit_ratio = self.simulator._get_unit_ratio(symbol, self.simulator.current_time)
+        margin_per_vol = (
+                si.trade_contract_size * entry_price / self.simulator.leverage
+                * si.margin_rate * unit_ratio
+        )
+
+        # volume 계산
+        available_margin = max(self.simulator.free_margin * self.simulator.stop_out_level, 0)
+        max_vol = available_margin / margin_per_vol
+
         v = abs(volume) / 100 * max_vol
         v = np.clip(v, si.volume_min, si.volume_max)
         v = round(v / si.volume_step) * si.volume_step
         return v
-
     def render(self, mode: str = 'human', **kwargs: Any) -> Any:
         if mode == 'simple_figure':
             return self._render_simple_figure(**kwargs)
