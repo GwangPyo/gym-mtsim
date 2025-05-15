@@ -10,6 +10,7 @@ import pandas as pd
 from ..metatrader import Timeframe, SymbolInfo, retrieve_data
 from .order import OrderType, Order
 from .exceptions import SymbolNotFound, OrderNotFound
+import cloudpickle
 
 
 class MtSimulator:
@@ -69,8 +70,9 @@ class MtSimulator:
     def load_symbols(self, filename: str) -> bool:
         if not os.path.exists(filename):
             return False
+
         with open(filename, 'rb') as file:
-            self.symbols_info, self.symbols_data = pickle.load(file)
+            self.symbols_info, self.symbols_data = cloudpickle.load(file)
         return True
 
     def tick(self, delta_time: timedelta=timedelta()) -> None:
