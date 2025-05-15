@@ -282,7 +282,6 @@ class MtEnv(gym.Env):
                 * si.margin_rate * unit_ratio
         )
 
-        # volume 계산
         available_margin = max(self.simulator.free_margin * self.simulator.stop_out_level, 0)
         max_vol = available_margin / margin_per_vol
 
