@@ -190,7 +190,7 @@ class MtSimulator:
         if volume >= old_order.volume:
              self.close_order(old_order)
              if volume > old_order.volume:
-                 return self._create_hedged_order(order_type, symbol, volume - old_order.volume, fee)
+                 return self._create_hedged_order(order_type, symbol, volume - old_order.volume, fee, True)
              return old_order
 
         partial_profit = (volume / old_order.volume) * old_order.profit
